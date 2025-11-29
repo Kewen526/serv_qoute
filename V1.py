@@ -627,6 +627,45 @@ def search_products_by_title(api_key, search_keyword, is_quotation_product=2):
         return None
 
 
+def get_product_by_id(api_key, product_id, is_quotation_product=2):
+    """
+    ✅ 新增函数：根据产品ID获取产品信息（使用 get-products 接口）
+
+    参数:
+        api_key: API密钥
+        product_id: 产品ID
+        is_quotation_product: 产品类型（默认2）
+
+    返回:
+        成功: 产品信息字典（包含 supplier_detail）
+        失败: None
+    """
+    url = f"{SP_BASE_URL}/get-products"
+    headers = {
+        "X-Service-Point-Access-Token": api_key,
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "productId": int(product_id),
+        "is_quotation_product": is_quotation_product
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('success'):
+            products = result.get('data', {}).get('products_data', [])
+            if products and len(products) > 0:
+                return products[0]  # 返回第一个产品
+        return None
+    except Exception as e:
+        print(f"   ⚠️  根据产品ID获取产品失败: {e}")
+        return None
+
+
 def mark_product_non_quotable(api_key, product_id, shopify_product_id):
     """
     标记产品为不可报价
@@ -925,47 +964,40 @@ def process_non_quotable_task(task_data):
         print(f"\n✅ 使用新接口获取的产品ID: {sp_product_id}")
         print(f"   预期供应商: {expected_supplier_name}")
 
-        # 直接使用product_id获取详情（跳过店铺匹配）
-        print(f"\n📋 获取产品详细信息...")
-        detail_result_temp = get_product_quotation(SP_API_KEY, sp_product_id, is_attachment_needed=0)
+        # 使用 get-products 接口获取产品信息（跳过店铺匹配）
+        print(f"\n📋 通过产品ID获取产品信息...")
+        product_detail_temp = get_product_by_id(SP_API_KEY, sp_product_id)
 
-        if detail_result_temp and detail_result_temp.get('success'):
-            detail_data_temp = detail_result_temp.get('data', [])
-            if detail_data_temp:
-                product_detail_temp = detail_data_temp[0]
+        if product_detail_temp:
+            # 提取实际的供应商名称
+            supplier_detail = product_detail_temp.get('supplier_detail', {})
+            if isinstance(supplier_detail, dict):
+                actual_supplier_name = supplier_detail.get('name', '')
 
-                # 提取实际的供应商名称
-                supplier_detail = product_detail_temp.get('supplier_detail', {})
-                if isinstance(supplier_detail, dict):
-                    actual_supplier_name = supplier_detail.get('name', '')
+            print(f"   实际供应商: {actual_supplier_name}")
 
-                print(f"   实际供应商: {actual_supplier_name}")
-
-                # 对比供应商名称（大小写敏感）
-                if expected_supplier_name != actual_supplier_name:
-                    sp_status_message = f"当前产品在{expected_supplier_name}账号，现在在{actual_supplier_name}账号"
-                    print(f"\n⚠️  供应商不一致!")
-                    print(f"   预期: {expected_supplier_name}")
-                    print(f"   实际: {actual_supplier_name}")
-                    print(f"   sp_status: {sp_status_message}")
-                else:
-                    print(f"✅ 供应商一致，无需设置sp_status")
-
-                # 使用新接口获取的产品信息
-                product_id = sp_product_id
-                shopify_product_id = product_detail_temp.get('product_shopify_id')
-
-                print(f"\n✅ 使用产品:")
-                print(f"   产品ID: {product_id}")
-                print(f"   Shopify ID: {shopify_product_id}")
-                print(f"   店铺: {product_detail_temp.get('store')}")
-                print(f"   产品名称: {product_detail_temp.get('product_name')}")
-                print(f"   状态: {product_detail_temp.get('status')}")
+            # 对比供应商名称（大小写敏感）
+            if expected_supplier_name != actual_supplier_name:
+                sp_status_message = f"当前产品在{expected_supplier_name}账号，现在在{actual_supplier_name}账号"
+                print(f"\n⚠️  供应商不一致!")
+                print(f"   预期: {expected_supplier_name}")
+                print(f"   实际: {actual_supplier_name}")
+                print(f"   sp_status: {sp_status_message}")
             else:
-                print(f"⚠️  产品详情为空，降级到标题搜索")
-                sp_product_id = None
+                print(f"✅ 供应商一致，无需设置sp_status")
+
+            # 使用新接口获取的产品信息
+            product_id = sp_product_id
+            shopify_product_id = product_detail_temp.get('product_shopify_id')
+
+            print(f"\n✅ 使用产品:")
+            print(f"   产品ID: {product_id}")
+            print(f"   Shopify ID: {shopify_product_id}")
+            print(f"   店铺: {product_detail_temp.get('store')}")
+            print(f"   产品名称: {product_detail_temp.get('product_name')}")
+            print(f"   状态: {product_detail_temp.get('status')}")
         else:
-            print(f"⚠️  获取产品详情失败，降级到标题搜索")
+            print(f"⚠️  获取产品信息失败，降级到标题搜索")
             sp_product_id = None
 
     # 方案B: 新接口失败，降级到标题搜索
@@ -1156,47 +1188,40 @@ def process_quotation_task(task_data):
         print(f"\n✅ 使用新接口获取的产品ID: {sp_product_id}")
         print(f"   预期供应商: {expected_supplier_name}")
 
-        # 直接使用product_id获取详情（跳过店铺匹配）
-        print(f"\n📋 获取产品详细信息...")
-        detail_result_temp = get_product_quotation(SP_API_KEY, sp_product_id, is_attachment_needed=0)
+        # 使用 get-products 接口获取产品信息（跳过店铺匹配）
+        print(f"\n📋 通过产品ID获取产品信息...")
+        product_detail_temp = get_product_by_id(SP_API_KEY, sp_product_id)
 
-        if detail_result_temp and detail_result_temp.get('success'):
-            detail_data_temp = detail_result_temp.get('data', [])
-            if detail_data_temp:
-                product_detail_temp = detail_data_temp[0]
+        if product_detail_temp:
+            # 提取实际的供应商名称
+            supplier_detail = product_detail_temp.get('supplier_detail', {})
+            if isinstance(supplier_detail, dict):
+                actual_supplier_name = supplier_detail.get('name', '')
 
-                # 提取实际的供应商名称
-                supplier_detail = product_detail_temp.get('supplier_detail', {})
-                if isinstance(supplier_detail, dict):
-                    actual_supplier_name = supplier_detail.get('name', '')
+            print(f"   实际供应商: {actual_supplier_name}")
 
-                print(f"   实际供应商: {actual_supplier_name}")
-
-                # 对比供应商名称（大小写敏感）
-                if expected_supplier_name != actual_supplier_name:
-                    sp_status_message = f"当前产品在{expected_supplier_name}账号，现在在{actual_supplier_name}账号"
-                    print(f"\n⚠️  供应商不一致!")
-                    print(f"   预期: {expected_supplier_name}")
-                    print(f"   实际: {actual_supplier_name}")
-                    print(f"   sp_status: {sp_status_message}")
-                else:
-                    print(f"✅ 供应商一致，无需设置sp_status")
-
-                # 使用新接口获取的产品信息
-                product_id = sp_product_id
-                shopify_product_id = product_detail_temp.get('product_shopify_id')
-
-                print(f"\n✅ 使用产品:")
-                print(f"   产品ID: {product_id}")
-                print(f"   Shopify ID: {shopify_product_id}")
-                print(f"   店铺: {product_detail_temp.get('store')}")
-                print(f"   产品名称: {product_detail_temp.get('product_name')}")
-                print(f"   状态: {product_detail_temp.get('status')}")
+            # 对比供应商名称（大小写敏感）
+            if expected_supplier_name != actual_supplier_name:
+                sp_status_message = f"当前产品在{expected_supplier_name}账号，现在在{actual_supplier_name}账号"
+                print(f"\n⚠️  供应商不一致!")
+                print(f"   预期: {expected_supplier_name}")
+                print(f"   实际: {actual_supplier_name}")
+                print(f"   sp_status: {sp_status_message}")
             else:
-                print(f"⚠️  产品详情为空，降级到标题搜索")
-                sp_product_id = None
+                print(f"✅ 供应商一致，无需设置sp_status")
+
+            # 使用新接口获取的产品信息
+            product_id = sp_product_id
+            shopify_product_id = product_detail_temp.get('product_shopify_id')
+
+            print(f"\n✅ 使用产品:")
+            print(f"   产品ID: {product_id}")
+            print(f"   Shopify ID: {shopify_product_id}")
+            print(f"   店铺: {product_detail_temp.get('store')}")
+            print(f"   产品名称: {product_detail_temp.get('product_name')}")
+            print(f"   状态: {product_detail_temp.get('status')}")
         else:
-            print(f"⚠️  获取产品详情失败，降级到标题搜索")
+            print(f"⚠️  获取产品信息失败，降级到标题搜索")
             sp_product_id = None
 
     # 方案B: 新接口失败，降级到标题搜索
