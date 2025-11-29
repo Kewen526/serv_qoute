@@ -160,6 +160,35 @@ def get_non_quotable_tasks(store_code, created_at):
         return None
 
 
+def get_product_id_by_keer_id(keer_product_id):
+    """
+    通过Keer产品ID获取product_id和supplier_name
+
+    参数:
+        keer_product_id: Keer产品ID
+
+    返回:
+        成功: {"success": True, "data": [{"product_id": xxx, "supplier_name": "xxx"}], ...}
+        失败: None 或 {"success": False, ...}
+    """
+    url = "http://47.95.157.46:8520/api/sp_productid"
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    payload = {
+        "keep_product_id": int(keer_product_id)
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"调用Keer产品ID接口失败: {e}")
+        return None
+
+
 def save_task_status(keer_product_id, sp_status=None, quotation_feedback_status=None, shi_image_note=None):
     """
     保存任务状态到内部系统
@@ -852,62 +881,71 @@ def process_non_quotable_task(task_data):
     print(f"🏪 店铺代码: {store_code}")
     print(f"🆔 Keer产品ID: {keer_product_id}")
 
-    # 2. 搜索Service Points产品
-    print(f"\n🔍 正在搜索Service Points产品...")
-    search_result = search_products_by_title(SP_API_KEY, client_product_title)
+    # 2. 通过Keer产品ID获取product_id
+    print(f"\n🔍 通过Keer产品ID获取product_id...")
+    keer_result = get_product_id_by_keer_id(keer_product_id)
 
-    if not search_result or not search_result.get('success'):
-        print(f"⚠️  搜索产品失败: {search_result}")
-
-        # ✅ 产品不存在 - 标记为失败
-        print(f"❌ 产品在Service Points平台上不存在")
+    if not keer_result or not keer_result.get('success'):
+        print(f"❌ Keer产品ID接口调用失败")
         save_task_status(
             keer_product_id=keer_product_id,
-            sp_status="产品链接消失",
+            sp_status="Keer产品ID接口调用失败",
             quotation_feedback_status=2
         )
         return False
 
-    products = search_result.get('data', {}).get('products_data', [])
-
-    if not products:
-        print(f"❌ 产品在Service Points平台上不存在")
+    data = keer_result.get('data', [])
+    if not data:
+        print(f"❌ Keer产品ID接口返回空数据")
         save_task_status(
             keer_product_id=keer_product_id,
-            sp_status="产品链接消失",
+            sp_status="Keer产品ID接口返回空数据",
             quotation_feedback_status=2
         )
         return False
 
-    # 3. 根据店铺编码匹配产品
-    print(f"\n📋 找到 {len(products)} 个匹配产品")
-    if len(products) > 1:
-        print(f"多个产品匹配，开始智能匹配:")
-        for i, p in enumerate(products, 1):
-            supplier_detail = p.get('supplier_detail', {})
-            supplier_name = supplier_detail.get('name', '') if isinstance(supplier_detail, dict) else ''
-            print(f"   {i}. ID:{p.get('product_id')} | 店铺:{p.get('store')} | 报价人员:{supplier_name}")
+    product_id = data[0].get('product_id')
 
-    product = match_product_by_store(products, store_code)
-
-    if not product:
-        print(f"❌ 店铺匹配失败")
+    if not product_id:
+        print(f"❌ 未获取到product_id")
         save_task_status(
             keer_product_id=keer_product_id,
-            sp_status="店铺匹配失败",
+            sp_status="未获取到product_id",
             quotation_feedback_status=2
         )
         return False
 
-    product_id = product.get('product_id')
-    shopify_product_id = product.get('product_shopify_id')
+    print(f"✅ 获取到product_id: {product_id}")
 
-    print(f"\n✅ 使用产品:")
-    print(f"   产品ID: {product_id}")
+    # 3. 获取产品详情以获取shopify_product_id
+    print(f"\n📋 获取产品详细信息...")
+    detail_result = get_product_quotation(SP_API_KEY, product_id, is_attachment_needed=0)
+
+    if not detail_result or not detail_result.get('success'):
+        print(f"❌ 获取产品详情失败")
+        save_task_status(
+            keer_product_id=keer_product_id,
+            sp_status="获取产品详情失败",
+            quotation_feedback_status=2
+        )
+        return False
+
+    detail_data = detail_result.get('data', [])
+    if not detail_data:
+        print(f"❌ 产品详情为空")
+        save_task_status(
+            keer_product_id=keer_product_id,
+            sp_status="产品详情为空",
+            quotation_feedback_status=2
+        )
+        return False
+
+    product_detail = detail_data[0]
+    shopify_product_id = product_detail.get('product_shopify_id')
+
+    print(f"✅ 获取到产品详情")
+    print(f"   Product ID: {product_id}")
     print(f"   Shopify ID: {shopify_product_id}")
-    print(f"   店铺: {product.get('store')}")
-    print(f"   产品名称: {product.get('product_name')}")
-    print(f"   状态: {product.get('status')}")
 
     # 4. 标记产品不可报价
     print(f"\n🚫 正在标记产品为不可报价...")
@@ -1017,61 +1055,45 @@ def process_quotation_task(task_data):
         print(f"❌ 错误: 解析报价结果失败 - {e}")
         return False
 
-    # 3. 搜索Service Points产品
-    print(f"\n🔍 正在搜索Service Points产品...")
-    search_result = search_products_by_title(SP_API_KEY, client_product_title)
+    # 3. 通过Keer产品ID获取product_id和supplier_name
+    print(f"\n🔍 通过Keer产品ID获取product_id...")
+    keer_result = get_product_id_by_keer_id(keer_product_id)
 
-    if not search_result or not search_result.get('success'):
-        print(f"⚠️  搜索产品失败: {search_result}")
-        print(f"❌ 产品在Service Points平台上不存在")
+    if not keer_result or not keer_result.get('success'):
+        print(f"❌ Keer产品ID接口调用失败")
         save_task_status(
             keer_product_id=keer_product_id,
-            sp_status="产品链接消失",
+            sp_status="Keer产品ID接口调用失败",
             quotation_feedback_status=2
         )
         return False
 
-    products = search_result.get('data', {}).get('products_data', [])
-
-    if not products:
-        print(f"❌ 产品在Service Points平台上不存在")
+    data = keer_result.get('data', [])
+    if not data:
+        print(f"❌ Keer产品ID接口返回空数据")
         save_task_status(
             keer_product_id=keer_product_id,
-            sp_status="产品链接消失",
+            sp_status="Keer产品ID接口返回空数据",
             quotation_feedback_status=2
         )
         return False
 
-    # 4. 根据店铺编码匹配产品
-    print(f"\n📋 找到 {len(products)} 个匹配产品")
-    if len(products) > 1:
-        print(f"多个产品匹配，开始智能匹配:")
-        for i, p in enumerate(products, 1):
-            supplier_detail = p.get('supplier_detail', {})
-            supplier_name = supplier_detail.get('name', '') if isinstance(supplier_detail, dict) else ''
-            print(f"   {i}. ID:{p.get('product_id')} | 店铺:{p.get('store')} | 报价人员:{supplier_name}")
+    product_id = data[0].get('product_id')
+    supplier_name_from_keer = data[0].get('supplier_name')  # 保存这个用于后续对比
 
-    product = match_product_by_store(products, store_code)
-
-    if not product:
-        print(f"❌ 店铺匹配失败")
+    if not product_id:
+        print(f"❌ 未获取到product_id")
         save_task_status(
             keer_product_id=keer_product_id,
+            sp_status="未获取到product_id",
             quotation_feedback_status=2
         )
         return False
 
-    product_id = product.get('product_id')
-    shopify_product_id = product.get('product_shopify_id')
+    print(f"✅ 获取到product_id: {product_id}")
+    print(f"   Supplier Name (from Keer): {supplier_name_from_keer}")
 
-    print(f"\n✅ 使用产品:")
-    print(f"   产品ID: {product_id}")
-    print(f"   Shopify ID: {shopify_product_id}")
-    print(f"   店铺: {product.get('store')}")
-    print(f"   产品名称: {product.get('product_name')}")
-    print(f"   状态: {product.get('status')}")
-
-    # 5. 获取产品详细报价信息
+    # 4. 获取产品详细报价信息
     print(f"\n📋 获取产品详细信息...")
     detail_result = get_product_quotation(SP_API_KEY, product_id, is_attachment_needed=1)
 
@@ -1079,6 +1101,7 @@ def process_quotation_task(task_data):
         print(f"❌ 获取产品详情失败: {detail_result}")
         save_task_status(
             keer_product_id=keer_product_id,
+            sp_status="获取产品详情失败",
             quotation_feedback_status=2
         )
         return False
@@ -1088,14 +1111,40 @@ def process_quotation_task(task_data):
         print(f"❌ 产品详情为空")
         save_task_status(
             keer_product_id=keer_product_id,
+            sp_status="产品详情为空",
             quotation_feedback_status=2
         )
         return False
 
     product_detail = detail_data[0]
+    shopify_product_id = product_detail.get('product_shopify_id')
     quotation_information = product_detail.get('quotation_information', {})
 
+    # 提取supplier_name用于对比
+    supplier_detail = product_detail.get('supplier_detail', {})
+    supplier_name_from_sp = supplier_detail.get('supplier_name', '') if isinstance(supplier_detail, dict) else ''
+
     print(f"✅ 获取到产品详情")
+    print(f"   Product ID: {product_id}")
+    print(f"   Shopify ID: {shopify_product_id}")
+    print(f"   Supplier Name (from SP): {supplier_name_from_sp}")
+
+    # 5. 对比supplier_name（大小写敏感）
+    name_mismatch = False
+    special_sp_status = None
+
+    if supplier_name_from_keer and supplier_name_from_sp:
+        if supplier_name_from_keer != supplier_name_from_sp:
+            name_mismatch = True
+            special_sp_status = f"当前产品在{supplier_name_from_keer}账号，现在在{supplier_name_from_sp}账号"
+            print(f"\n⚠️  检测到supplier_name不一致:")
+            print(f"   Keer接口返回: {supplier_name_from_keer}")
+            print(f"   SP详情返回: {supplier_name_from_sp}")
+            print(f"   将在最后回传特殊sp_status: {special_sp_status}")
+        else:
+            print(f"\n✅ Supplier name一致: {supplier_name_from_sp}")
+    else:
+        print(f"\n⚠️  Supplier name未完全获取到，跳过对比")
 
     # 6. 提取国家代码映射和variant信息
     country_mapping = get_country_id_mapping(quotation_information)
@@ -1411,10 +1460,19 @@ def process_quotation_task(task_data):
 
     # 15. 最终成功
     print(f"\n📝 保存最终成功状态...")
-    save_task_status(
-        keer_product_id=keer_product_id,
-        quotation_feedback_status=1
-    )
+    # 如果name不一致，额外保存特殊sp_status
+    if name_mismatch and special_sp_status:
+        print(f"   ⚠️  同时保存特殊sp_status: {special_sp_status}")
+        save_task_status(
+            keer_product_id=keer_product_id,
+            quotation_feedback_status=1,
+            sp_status=special_sp_status
+        )
+    else:
+        save_task_status(
+            keer_product_id=keer_product_id,
+            quotation_feedback_status=1
+        )
 
     # ✅ 16. 调用update_sp_status接口
     update_sp_status(keer_product_id)
